@@ -17,8 +17,8 @@
 #define DIN_PIN 13
 #define CS_PIN   12
 #define CLK_PIN 11
+#define BUTTON_PIN 10
 #define LED_PIN 48
-
 #define HARDWARE_TYPE MD_MAX72XX::FC16_HW
 #define EEPROM_SIZE 1024
 #define EEPROM_MAGIC 0xA55A1234
@@ -31,6 +31,28 @@ struct EEPROMstorage {
     uint8_t dpEnabled;
     uint8_t colonBlinkEnabled;
     uint8_t colonBlinkSlow;
+};
+
+enum ErrorType {
+    ERR_NONE,
+    ERR_WIFI,
+    ERR_OTA_FAIL,
+    ERR_SYNC,
+    ERR_EEPROM,
+    ERR_MDNS
+};
+
+struct ErrorDisplayMap {
+    ErrorType type;
+    const char* code;
+};
+
+ErrorDisplayMap errorMap[] = {
+    { ERR_WIFI, "wifi" },
+    { ERR_OTA_FAIL, "fail" },
+    { ERR_SYNC, "sync" },
+    { ERR_EEPROM, "eepr" },
+    { ERR_MDNS, "mdns" }
 };
 
 const long gmtOffset_sec = TZ * 3600; // MST
@@ -54,6 +76,7 @@ IPAddress AP_IP(10,1,1,1);
 IPAddress AP_subnet(255,255,255,0);
 AsyncWebServer server(80);
 EEPROMstorage config;
+ErrorType activeError = ERR_NONE;
 MD_Parola matrix = MD_Parola(HARDWARE_TYPE, DIN_PIN, CLK_PIN,CS_PIN, MAX_DEVICES);
 
 // bits 0..6 = a..g
@@ -74,12 +97,14 @@ void NTPsync();
 void updateTime();
 void updateColon();
 void display();
+void errorCtrl(ErrorType err);
 
 void setup() {
     Serial.begin(115200);
     Serial.println("Starting up...");
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, HIGH);
+    pinMode(BUTTON_PIN, INPUT_PULLUP);
     matrix.begin();
     matrix.setIntensity(8);
     matrix.displayClear();
@@ -128,7 +153,7 @@ void readConf() {
     }
     if (config.magic != EEPROM_MAGIC) {
         Serial.println("EEPROM not initialized or corrupt. Loading defaults...");
-        //TODO errorCtrl();
+        errorCtrl(ERR_EEPROM);
         memset(&config, 0, sizeof(EEPROMstorage));
         config.magic = EEPROM_MAGIC;
         strcpy(config.wifi_ssid, "your-ssid");
@@ -156,10 +181,11 @@ bool connectToWiFi() {
     if (WiFi.waitForConnectResult() == WL_CONNECTED) {
         Serial.print("Connected. IP: "); Serial.println(WiFi.localIP());
         wifiConnected = true;
+        activeError = ERR_NONE;
         return true;
     } 
     Serial.println("Connection failed");
-    //TODO errorCtrl();
+    errorCtrl(ERR_WIFI);
     return false;
 }
 
@@ -252,7 +278,7 @@ void handleWebServerRequest(AsyncWebServerRequest *request) {
 void startMDNS() {
     if (!MDNS.begin(hostname)) {
         Serial.println("Error setting up MDNS responder!");
-        //TODO errorCtrl();
+        errorCtrl(ERR_MDNS);
         return;
     }
     Serial.println("mDNS responder started");
@@ -293,7 +319,7 @@ void setUpWebServer() {
             requestReboot();
         } else {
             Serial.println("OTA update failed :(");
-            //TODO errorCtrl();
+            errorCtrl(ERR_OTA_FAIL);
         }
     });
     Serial.println("ElegantOTA server started");
@@ -307,7 +333,7 @@ void requestReboot() {
 }
 
 void rebootCheck() {
-    if (reboot && millis() >= rebootAt + 2000) {
+    if (reboot && millis() >= rebootAt + (activeError == ERR_NONE ? 2000 : 5000)) {
         server.end();
         delay(500);
         ESP.restart();
@@ -329,7 +355,7 @@ void NTPsync() {
         while (!getLocalTime(&timeinfo)) {
             if (millis() - startAttempt > 3000) {
                 Serial.println("NTP sync failed.");
-                //TODO errorCtrl();
+                errorCtrl(ERR_SYNC);
                 return;
             }
             delay(100);
@@ -370,4 +396,22 @@ void updateColon() {
 void display() {
     if (otaInProgress) return;
     // display update code here
+}
+
+oid errorCtrl(ErrorType err) {
+    activeError = err;
+    if (err == ERR_NONE) return;
+    const char *code = nullptr;
+    for (auto &m : errorMap) {
+        if (m.type == err) {
+            code = m.code;
+            break;
+        }
+    }
+    if (!code) return; // should never happen
+    // display error
+    Serial.print("ERROR: ");
+    Serial.println(code);
+    if (activeError != ERR_WIFI && activeError != ERR_EEPROM) requestReboot();
+    display();
 }
