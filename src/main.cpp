@@ -98,6 +98,7 @@ void updateTime();
 void updateColon();
 void display();
 void errorCtrl(ErrorType err);
+void otaProgress();
 
 void setup() {
     Serial.begin(115200);
@@ -106,8 +107,9 @@ void setup() {
     digitalWrite(LED_PIN, HIGH);
     pinMode(BUTTON_PIN, INPUT_PULLUP);
     matrix.begin();
-    matrix.setIntensity(8);
+    matrix.setIntensity(1);
     matrix.displayClear();
+    matrix.setTextAlignment(PA_LEFT);
     EEPROM.begin(EEPROM_SIZE);
     readConf();
     if (!connectToWiFi()){ setUpAccessPoint(); }
@@ -119,27 +121,6 @@ void setup() {
 }
 
 void loop() {
-    matrix.setTextAlignment(PA_LEFT);
-    matrix.print("Left");
-    delay(2000);
-
-    matrix.setTextAlignment(PA_CENTER);
-    matrix.print("Center");
-    delay(2000);
-
-    matrix.setTextAlignment(PA_RIGHT);
-    matrix.print("Right");
-    delay(2000);
-
-    matrix.setTextAlignment(PA_CENTER);
-    matrix.setInvert(true);
-    matrix.print("Invert");
-    delay(2000);
-
-    matrix.setInvert(false);
-    matrix.print(1234);
-    delay(2000);
-
     rebootCheck();
     NTPsync();
     updateTime();
@@ -299,12 +280,14 @@ void setUpWebServer() {
     ElegantOTA.setAuth("admin", pass);
     ElegantOTA.begin(&server);
     ElegantOTA.onStart([]() {
+        matrix.displayClear();
         Serial.println("OTA update process started.");
         otaInProgress = true;
     });
     ElegantOTA.onProgress([](size_t current, size_t final) {
         if (millis() - otaProgressMillis > 1000) {
             otaProgressMillis = millis();
+            matrix.print(String("OTA: " + String((current * 100) / final) + "%"));
             Serial.printf("Progress: %u%%\n", (current * 100) / final);
             digitalWrite(LED_PIN, !digitalRead(LED_PIN));
         }
@@ -314,6 +297,8 @@ void setUpWebServer() {
         otaInProgress = false;
         digitalWrite(LED_PIN, LOW);
         if (success) {
+            matrix.displayClear();
+            matrix.print("Success");
             Serial.println("OTA update completed successfully! Restarting...");
             delay(500);
             requestReboot();
@@ -395,10 +380,18 @@ void updateColon() {
 
 void display() {
     if (otaInProgress) return;
-    // display update code here
+    if (activeError != ERR_NONE) return;
+    if (!colonOn) {
+        // matrix.print(h1 + h2 + " " + m1 + m2);
+        matrix.print("12 34");
+    }
+    else {
+        // matrix.print(h1 + h2 + ":" + m1 + m2);
+        matrix.print("12:34");
+    }
 }
 
-oid errorCtrl(ErrorType err) {
+void errorCtrl(ErrorType err) {
     activeError = err;
     if (err == ERR_NONE) return;
     const char *code = nullptr;
